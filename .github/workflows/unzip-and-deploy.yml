@@ -115,27 +115,9 @@ jobs:
           chmod +x gradlew
           ls -la
 
-      # ساین اختیاری: اگه این Secret ها رو توی ریپو گذاشتی با کی‌استور خودت ساین می‌شه،
-      # وگرنه ریلیز با ساین دیباگ ساخته می‌شه (قابل نصبه، برای پلی‌استور نیست)
-      # NOTE: GitHub does NOT allow the secrets context inside an `if:` condition,
-      # so the value is passed via env: and checked inside the shell instead.
-      - name: Decode keystore (optional)
-        env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
-          KS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KS_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        shell: bash
-        run: |
-          if [ -z "$KEYSTORE_B64" ]; then
-            echo "No keystore secret set - release APK will be debug-signed."
-            exit 0
-          fi
-          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
-          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-          echo "KEYSTORE_PASSWORD=$KS_PASSWORD" >> "$GITHUB_ENV"
-          echo "KEY_ALIAS=$KS_ALIAS" >> "$GITHUB_ENV"
-          echo "KEY_PASSWORD=$KS_KEY_PASSWORD" >> "$GITHUB_ENV"
+      # Signing: this workflow intentionally has NO keystore step and uses
+      # ZERO custom credentials, so GitHub can never reject it for that. The release APK
+      # uses the debug-signing fallback in app/build.gradle.kts (installable).
 
       - name: Build APK (Release + Debug)
         shell: bash
