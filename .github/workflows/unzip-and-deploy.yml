@@ -1,0 +1,180 @@
+# ============================================================================
+#  Liquid Notes — Unzip & Deploy (GitHub Actions)
+#
+#  طرز استفاده:
+#    ۱) یه ریپوی خالی توی گیت‌هاب بساز
+#    ۲) فایل LiquidGlassNotes.zip رو توی ریشه (root) ریپو آپلود کن
+#    ۳) همین فایل رو دقیقاً با این مسیر توی ریپو بذار:
+#           .github/workflows/unzip-and-deploy.yml
+#    ۴) از تب Actions گزینه‌ی "Unzip & Deploy — Liquid Notes" رو Run کن
+#       (با Push کردن فایل zip هم خودش خودکار اجرا می‌شه)
+#    ۵) فایل APK آماده از بخش Releases و Artifacts قابل دانلوده 🚀
+#
+#  How to use:
+#    1) Create an empty GitHub repository
+#    2) Upload LiquidGlassNotes.zip to the repository root
+#    3) Add THIS file as:  .github/workflows/unzip-and-deploy.yml
+#    4) Run it from the Actions tab (or just push the zip — it runs automatically)
+#    5) Get the APK from GitHub Releases + workflow Artifacts
+# ============================================================================
+
+name: Unzip & Deploy — Liquid Notes
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_file:
+        description: 'ZIP file name in repo root (leave empty = auto-detect the first .zip)'
+        required: false
+        default: ''
+      release_tag:
+        description: 'Release tag to publish'
+        required: false
+        default: 'v1.0.0'
+      publish_release:
+        description: 'Publish a GitHub Release with the APK'
+        type: boolean
+        required: false
+        default: true
+  push:
+    branches: [ main, master ]
+    paths:
+      - '**.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  unzip-build-deploy:
+    name: Unzip → Build → Deploy APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 1) UNZIP — پیدا کردن فایل زیپ و باز کردنش
+      # ------------------------------------------------------------------
+      - name: Find the ZIP file
+        id: findzip
+        shell: bash
+        run: |
+          ZIP="${{ github.event.inputs.zip_file }}"
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            ZIP="$(find . -maxdepth 2 -name '*.zip' -not -path './.git/*' | head -n 1)"
+          fi
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            echo "::error::No .zip file found in the repository. Upload LiquidGlassNotes.zip to the repo root first."
+            exit 1
+          fi
+          echo "Found ZIP: $ZIP"
+          echo "zip_path=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Unzip the project
+        id: unzip
+        shell: bash
+        run: |
+          rm -rf project_src
+          mkdir -p project_src
+          unzip -q "${{ steps.findzip.outputs.zip_path }}" -d project_src
+          echo "--- Unzipped content ---"
+          find project_src -maxdepth 3 | head -50
+
+          # پیدا کردن ریشه‌ی واقعی پروژه (جایی که settings.gradle.kts هست)
+          SETTINGS="$(find project_src -name 'settings.gradle.kts' -not -path '*/build/*' | head -n 1)"
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle.kts not found inside the ZIP — this is not the Liquid Notes project zip."
+            exit 1
+          fi
+          PROJECT_DIR="$(dirname "$SETTINGS")"
+          echo "Project directory: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # 2) BUILD — نصب JDK و Gradle و بیلد گرفتن
+      # ------------------------------------------------------------------
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Generate Gradle wrapper (if missing)
+        shell: bash
+        working-directory: ${{ steps.unzip.outputs.project_dir }}
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 8.9
+          fi
+          chmod +x gradlew
+          ls -la
+
+      # ساین اختیاری: اگه این Secret ها رو توی ریپو گذاشتی با کی‌استور خودت ساین می‌شه،
+      # وگرنه ریلیز با ساین دیباگ ساخته می‌شه (قابل نصبه، برای پلی‌استور نیست)
+      - name: Decode keystore (optional)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        shell: bash
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Build APK (Release + Debug)
+        shell: bash
+        working-directory: ${{ steps.unzip.outputs.project_dir }}
+        run: ./gradlew assembleRelease assembleDebug --stacktrace
+
+      # ------------------------------------------------------------------
+      # 3) DEPLOY — انتشار APK
+      # ------------------------------------------------------------------
+      - name: Collect APKs
+        id: collect
+        shell: bash
+        run: |
+          mkdir -p dist
+          TAG="${{ github.event.inputs.release_tag }}"
+          if [ -z "$TAG" ]; then TAG="v1.0.0"; fi
+          find "${{ steps.unzip.outputs.project_dir }}/app/build/outputs/apk/release" -name '*.apk' \
+            -exec cp {} "dist/LiquidNotes-${TAG}.apk" \; 2>/dev/null || true
+          find "${{ steps.unzip.outputs.project_dir }}/app/build/outputs/apk/debug" -name '*.apk' \
+            -exec cp {} "dist/LiquidNotes-${TAG}-debug.apk" \; 2>/dev/null || true
+          ls -lh dist
+          if ! ls dist/*.apk >/dev/null 2>&1; then
+            echo "::error::Build finished but no APK was produced."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiquidNotes-apk
+          path: dist/*.apk
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (Deploy)
+        if: ${{ github.event_name == 'push' || github.event.inputs.publish_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.collect.outputs.tag }}
+          name: Liquid Notes ${{ steps.collect.outputs.tag }}
+          body: |
+            ## Liquid Notes — Liquid Glass Notepad ✨
+
+            Deployed automatically by the **Unzip & Deploy** workflow:
+            the project ZIP was unzipped, built with Gradle, and published here.
+
+            **Install:** download `LiquidNotes-*.apk` below and open it on an Android 12+ device.
+            The `-debug.apk` is a fallback build; the plain one is the release build.
+          files: dist/*.apk
+          draft: false
+          prerelease: false
